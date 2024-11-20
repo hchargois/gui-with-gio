@@ -13,20 +13,54 @@ import (
 	"gioui.org/widget/material"
 )
 
-// Define the progress variables, a channel and a variable
-var progress float32
-var progressIncrementer chan float32
+type Timer struct {
+	elapsed time.Duration
+	target  time.Duration
+	running bool
+}
+
+func NewTimer(target time.Duration) *Timer {
+	return &Timer{
+		target: target,
+	}
+}
+
+func (t *Timer) IsRunning() bool {
+	return t.running
+}
+
+func (t *Timer) Start() {
+	t.running = true
+}
+
+func (t *Timer) Stop() {
+	t.running = false
+}
+
+func (t *Timer) Reset() {
+	t.elapsed = 0
+	t.running = false
+}
+
+func (t *Timer) IsFinished() bool {
+	return t.elapsed >= t.target
+}
+
+func (t *Timer) Progress() float32 {
+	return float32(t.elapsed) / float32(t.target)
+}
+
+func (t *Timer) Advance(dt time.Duration) {
+	if t.running {
+		t.elapsed += dt
+		if t.elapsed >= t.target {
+			t.elapsed = t.target
+			t.running = false
+		}
+	}
+}
 
 func main() {
-	// Setup a separate channel to provide ticks to increment progress
-	progressIncrementer = make(chan float32)
-	go func() {
-		for {
-			time.Sleep(time.Second / 25)
-			progressIncrementer <- 0.004
-		}
-	}()
-
 	go func() {
 		// create new window
 		w := new(app.Window)
@@ -48,25 +82,16 @@ func draw(w *app.Window) error {
 	// ops are the operations from the UI
 	var ops op.Ops
 
-	// startButton is a clickable widget
 	var startButton widget.Clickable
+	var stopButton widget.Clickable
+	var resetButton widget.Clickable
 
-	// is the egg boiling?
-	var boiling bool
+	var lastFrameTime time.Time
 
 	// th defines the material design style
 	th := material.NewTheme()
 
-	// listen for events in the incrementer channel
-	go func() {
-		for p := range progressIncrementer {
-			if boiling && progress < 1 {
-				progress += p
-				// Force a redraw by invalidating the frame
-				w.Invalidate()
-			}
-		}
-	}()
+	timer := NewTimer(3 * time.Second)
 
 	for {
 		// listen for events in the window
@@ -75,11 +100,20 @@ func draw(w *app.Window) error {
 		// this is sent when the application should re-render
 		case app.FrameEvent:
 			gtx := app.NewContext(&ops, e)
-			// Let's try out the flexbox layout concept
+
+			timer.Advance(gtx.Now.Sub(lastFrameTime))
+
 			if startButton.Clicked(gtx) {
-				boiling = !boiling
+				timer.Start()
+			}
+			if stopButton.Clicked(gtx) {
+				timer.Stop()
+			}
+			if resetButton.Clicked(gtx) {
+				timer.Reset()
 			}
 
+			// Let's try out the flexbox layout concept
 			layout.Flex{
 				// Vertical alignment, from top to bottom
 				Axis: layout.Vertical,
@@ -88,7 +122,7 @@ func draw(w *app.Window) error {
 			}.Layout(gtx,
 				layout.Rigid(
 					func(gtx C) D {
-						bar := material.ProgressBar(th, progress)
+						bar := material.ProgressBar(th, timer.Progress())
 						return bar.Layout(gtx)
 					},
 				),
@@ -105,19 +139,22 @@ func draw(w *app.Window) error {
 						return margins.Layout(gtx,
 							// ...the same function we earlier used to create a button
 							func(gtx C) D {
-								var text string
-								if !boiling {
-									text = "Start"
-								} else {
-									text = "Stop"
+								if timer.IsRunning() {
+									return material.Button(th, &stopButton, "stop").Layout(gtx)
 								}
-								btn := material.Button(th, &startButton, text)
-								return btn.Layout(gtx)
+								if timer.IsFinished() {
+									return material.Button(th, &resetButton, "reset").Layout(gtx)
+								}
+								return material.Button(th, &startButton, "start").Layout(gtx)
 							},
 						)
 					},
 				),
 			)
+			if timer.IsRunning() {
+				gtx.Execute(op.InvalidateCmd{})
+			}
+			lastFrameTime = gtx.Now
 			e.Frame(gtx.Ops)
 
 		// this is sent when the application is closed
